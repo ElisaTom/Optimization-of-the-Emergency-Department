@@ -1,7 +1,6 @@
 import pandas as pd
 import pm4py
 import os
-from pm4py.algo.filtering.dfg import dfg_filtering 
 
 PROCESSED_DATA_PATH = "data/processed/patient_journey_log.csv"
 OUTPUT_DIR = "reports/figures"
@@ -12,34 +11,69 @@ def discover_process():
     df = pd.read_csv(PROCESSED_DATA_PATH)
     df['time:timestamp'] = pd.to_datetime(df['time:timestamp'], utc=True)
 
-    # Deleting rare activities
-    counter = df['concept:name'].value_counts()
-    df = df[df['concept:name'].isin(counter[counter >= 20].index)]
-
     # Grouping similar activities
-    df['concept:name'] = df['concept:name'].str.lower()
-    df['concept:name'] = df['concept:name'].replace(r'depression|anxiety|suicide|behavioral', 'Mental health intervention',regex=True)
-    df['concept:name'] = df['concept:name'].replace(r'x-ray|ct scan|mri|mammography|ultrasound', 'Imaging tests',regex=True)
-    df['concept:name'] = df['concept:name'].replace(r'chlamydia|gonorrhea|hiv|hepatitis|syphilis', 'STD tests',regex=True)
-    df['concept:name'] = df['concept:name'].replace(r'pregnancy|prenatal|fetal|mother|childbirth|labor', 'Pregnancy and childbirth',regex=True)
-    df['concept:name'] = df['concept:name'].replace(r'vaccination|immunization|immunotherapy', 'Vaccination/Immunization', regex=True)
+    s = df['concept:name'].astype(str).str.strip().str.lower()
 
-    # Graph Discovery 
+    def _collapse(rule_regex: str, label: str) -> None:
+        nonlocal s
+        s = s.replace(rule_regex, label, regex=True)
+        mask = s.str.contains(label, regex=False)
+        s.loc[mask] = label
+
+    rules = [
+        (
+            r'pregnan|prenatal|amniotic|fetal|uterine fundal|childbirth|pregnancy test',
+            'pregnancy & fetal care',
+        ),
+        (
+            r'depression|patient health questionnaire|phq[- ]?(2|9)?|anxiety|mental health|cognitive and behavioral therapy',
+            'mental/behavioral health',
+        ),
+        (
+            r'substance use|drug abuse|alcohol use disorders identification test|audit[- ]?c',
+            'substance/abuse screening',
+        ),
+        (
+            r'renal dialysis|hemodialysis|haemodialysis',
+            'renal/dialysis',
+        ),
+        (
+            r'chemotherapy|radiation therapy|teleradiotherapy',
+            'oncology therapy',
+        ),
+        (
+            r'electrical cardioversion|electrocardiographic|ecg|echocardiography',
+            'cardiology procedures/tests',
+        ),
+        (
+            r'\bx-ray\b|radiograph|mammography|bone density scan|computed tomography|magnetic resonance|ultrasound',
+            'imaging tests',
+        ),
+        (
+            r'hemoglobin|hematocrit|platelet count|cytopathology|smear|chlamydia|gonorrhea|syphilis|hepatitis|human immunodeficiency virus|\bhiv\b',
+            'lab tests / std panel',
+        ),
+    ]
+
+    for rule, label in rules:
+        _collapse(rule, label)
+
+    df['concept:name'] = s
+
+    case_sizes = df.groupby('case:concept:name').size()
+    df = df[df['case:concept:name'].isin(case_sizes[case_sizes >= 2].index)]
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     dfg, start_activities, end_activities = pm4py.discover_dfg(df)
 
-    # Filtering for more frequent activities 
-    activities_count = df['concept:name'].value_counts().to_dict() 
-    dfg_filtered, start_f, end_f, activities_f = dfg_filtering.filter_dfg_on_activities_percentage(
-    dfg, start_activities, end_activities, activities_count, percentage=0.6)
-
-    # Filtering for infrequent paths
-    dfg_edges_filtered, start_edges, end_edges,activities_edges = dfg_filtering.filter_dfg_on_paths_percentage(
-    dfg_filtered, start_f, end_f, activities_count, percentage= 0.3, keep_all_activities= False)
-
-    #Saving Visualization
     os.makedirs(os.path.dirname(OUTPUT_IMG_PATH), exist_ok=True)
-    pm4py.save_vis_dfg(dfg_edges_filtered, start_edges, end_edges, OUTPUT_IMG_PATH, variant = "frequency")
+    pm4py.save_vis_dfg(
+        dfg,
+        start_activities,
+        end_activities,
+        OUTPUT_IMG_PATH,
+        variant="frequency",
+    )
 
 
 if __name__ == "__main__":

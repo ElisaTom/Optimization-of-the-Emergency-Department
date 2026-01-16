@@ -6,45 +6,36 @@ RAW_DATA_PATH = "data/raw/EventLog.csv"
 PROCESSED_DATA_PATH = "data/processed/patient_journey_log.csv"
 
 def ingest_and_clean():
-    
+
     try:
-        # Read CSV
-       cols_to_use = ['PATIENT', 'START', 'STOP', 'DESCRIPTION']
-       df = pd.read_csv(RAW_DATA_PATH, sep=',', usecols=cols_to_use)
+        cols_to_use = ['ENCOUNTER', 'START', 'STOP', 'DESCRIPTION']
+        df = pd.read_csv(RAW_DATA_PATH, sep=';', usecols=cols_to_use)
     except FileNotFoundError:
         print(f"ERROR: File {RAW_DATA_PATH} not found.")
         sys.exit(1)
-    
-    # Convert both START and STOP 
-    df['START'] = pd.to_datetime(df['START'], format="ISO8601", utc=True)
-    df['STOP'] = pd.to_datetime(df['STOP'], format="ISO8601", utc=True)
-    df.sort_values(by=['PATIENT', 'START'], inplace=True)
 
+    df['START'] = pd.to_datetime(df['START'], utc=True, errors='coerce')
+    df['STOP'] = pd.to_datetime(df['STOP'], utc=True, errors='coerce')
 
-    n_patients = 300
-    top_patients = df['PATIENT'].unique()[:n_patients]
-    df = df[df['PATIENT'].isin(top_patients)].copy()
+    df['DESCRIPTION'] = df['DESCRIPTION'].fillna('UNKNOWN_ACTIVITY')
+
+    df.dropna(subset=['ENCOUNTER', 'START', 'STOP', 'DESCRIPTION'], inplace=True)
+
+    n_patients = 76  # adjust as needed
+    encounter_counts = df['ENCOUNTER'].unique()[:n_patients]
+    df = df[df['ENCOUNTER'].isin(encounter_counts)].copy()
+
+    df.sort_values(by=['ENCOUNTER', 'START', 'STOP'], inplace=True)
 
     # Column Mapping for standard PM4Py
     rename_mapping = {
-        'PATIENT': 'case:concept:name',
+        'ENCOUNTER': 'case:concept:name',
         'DESCRIPTION': 'concept:name',
         'STOP': 'time:timestamp'
     }
     df.rename(columns=rename_mapping, inplace=True)
 
-    df.dropna(subset=['case:concept:name', 'time:timestamp'], inplace=True)
-   
-    # HANDLING MISSING ACTIVITIES
-    df['concept:name'] = df['concept:name'].fillna("UNKNOWN_ACTIVITY")
-
-    # HANDLING ATTRIBUTES (Costs and Reasons)
-    if 'BASE_COST' in df.columns:
-        df['BASE_COST'] = df['BASE_COST'].fillna(0)
-
-    if 'REASONDESCRIPTION' in df.columns:
-        df['REASONDESCRIPTION'] = df['REASONDESCRIPTION'].fillna("Not specified")
-
+    df.dropna(subset=['case:concept:name', 'time:timestamp', 'concept:name'], inplace=True)
 
     os.makedirs(os.path.dirname(PROCESSED_DATA_PATH), exist_ok=True)
     df.to_csv(PROCESSED_DATA_PATH, index=False)
