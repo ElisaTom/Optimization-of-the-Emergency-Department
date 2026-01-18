@@ -15,17 +15,19 @@ DAY_NIGHT_BOXPLOT = "reports/figures/waiting_time_day_night_boxplot.png"
 
 
 # function for uniform boxplots
-def beautify_boxplot(data, labels, title, ylabel, output_path):
+def beautify_boxplot(data, labels, title, ylabel, output_path, colors=None):
     plt.figure()
+    if colors is None:
+       colors = ["#A0CDF5"] * len(data)
+
     bp = plt.boxplot(data, labels=labels, patch_artist=True, whiskerprops=dict(linewidth=1.5), medianprops=dict(color="black", linewidth=2),
         flierprops=dict(
             marker='o',
             markersize=4,
             markeredgewidth=1
         ))
-    for box in bp["boxes"]:
-        box.set(facecolor="seagreen", linewidth=1.5)
-        box.set(edgecolor="black")
+    for box , color in zip(bp["boxes"], colors):
+        box.set(facecolor=color, edgecolor="black", linewidth=1.5)
 
     plt.title(title)
     plt.ylabel(ylabel)
@@ -194,9 +196,8 @@ def discover_process():
     df["hour"] = df["end:timestamp"].dt.hour
     df["time_of_day"] = df["hour"].apply(lambda x: "day" if 6 <= x < 18 else "night")
     df = df.dropna(subset=["waiting_time"])
-    day_wait = df[df["time_of_day"] == "day"]["waiting_time"]
-    night_wait = df[df["time_of_day"] == "night"]["waiting_time"]
-    beautify_boxplot([day_wait, night_wait], ["Day", "Night"], "Waiting Time by Time of Day", "Waiting Time (hours)", DAY_NIGHT_BOXPLOT)
+    beautify_boxplot( [df[df["time_of_day"] == "day"]["waiting_time"],
+     df[df["time_of_day"] == "night"]["waiting_time"]], ["Day", "Night"], "Waiting Time by Time of Day", "Waiting Time (hours)", DAY_NIGHT_BOXPLOT, colors=["#A0CDF5", "#9FE984"])
 
 
 
