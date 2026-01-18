@@ -11,6 +11,28 @@ OUTPUT_DIR = "reports/figures"
 BOXPLOT_PATH = "reports/figures/waiting_time_boxplot.png"
 OUTPUT_IMG_PATH = "reports/figures/patient_journey_dfg.png"
 OUTPUT_IMG_PATH_TIME = "reports/figures/patient_journey_dfg_time.png"
+DAY_NIGHT_BOXPLOT = "reports/figures/waiting_time_day_night_boxplot.png"
+
+
+# function for uniform boxplots
+def beautify_boxplot(data, labels, title, ylabel, output_path):
+    plt.figure()
+    bp = plt.boxplot(data, labels=labels, patch_artist=True, whiskerprops=dict(linewidth=1.5), medianprops=dict(color="black", linewidth=2),
+        flierprops=dict(
+            marker='o',
+            markersize=4,
+            markeredgewidth=1
+        ))
+    for box in bp["boxes"]:
+        box.set(facecolor="seagreen", linewidth=1.5)
+        box.set(edgecolor="black")
+
+    plt.title(title)
+    plt.ylabel(ylabel)
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
+
 
 def discover_process():
     df = pd.read_csv(PROCESSED_DATA_PATH)
@@ -19,19 +41,15 @@ def discover_process():
     df["start:timestamp"] = pd.to_datetime(df["start:timestamp"], utc=True)
     df["end:timestamp"] = pd.to_datetime(df["end:timestamp"], utc=True)
 
+
     # Manually computes the waiting time to generate a boxplot to look for outliers
     df["waiting_time"] = (
     df.groupby("case:concept:name")["start:timestamp"]
       .shift(-1) - df["end:timestamp"])
     df["next_activity"] = df.groupby("case:concept:name")["concept:name"].shift(-1)
     df["waiting_time"] = df["waiting_time"].dt.total_seconds() / 3600.0 #in hours
-    df_plot = df.dropna(subset=["waiting_time"])
-    plt.figure()
-    plt.boxplot(df_plot["waiting_time"], vert=True, showfliers=True)
-    plt.title("Boxplot of Waiting Times (in hours)")
-    plt.ylabel("Waiting Time")
-    plt.savefig(BOXPLOT_PATH)
-    plt.close()    
+    df_wait = df.dropna(subset=["waiting_time"])
+    beautify_boxplot( [df_wait["waiting_time"]], ["Waiting Time in hours"], "Waiting time boxplot", "Waiting Time distribution", BOXPLOT_PATH)   
 
     # Analysis of outliers
     outliers = df[df["waiting_time"] > df["waiting_time"].quantile(0.95)]
@@ -54,7 +72,6 @@ def discover_process():
     mean_after_current = df.groupby("concept:name")["waiting_time"].mean().reset_index()
     outliers = outliers.merge(mean_before_next, on = "next_activity", how = "left", suffixes=('', '_mean_before_next'))
     outliers = outliers.merge(mean_after_current, on="concept:name", how="left", suffixes=('', '_mean_after_current'))
-    
 
     real_outliers = outliers[ 
         ((outliers["next_activity"].isin(isolated_acts)) &
@@ -173,5 +190,15 @@ def discover_process():
  
     Source(dot).render(filename=os.path.splitext(OUTPUT_IMG_PATH_TIME)[0], format="png", cleanup=True) 
 
+    # Looking for difference in waiting times between day and night
+    df["hour"] = df["end:timestamp"].dt.hour
+    df["time_of_day"] = df["hour"].apply(lambda x: "day" if 6 <= x < 18 else "night")
+    df = df.dropna(subset=["waiting_time"])
+    day_wait = df[df["time_of_day"] == "day"]["waiting_time"]
+    night_wait = df[df["time_of_day"] == "night"]["waiting_time"]
+    beautify_boxplot([day_wait, night_wait], ["Day", "Night"], "Waiting Time by Time of Day", "Waiting Time (hours)", DAY_NIGHT_BOXPLOT)
+
+
+
 if __name__ == "__main__":
-    discover_process()
+    discover_process() 
