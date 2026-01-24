@@ -1,99 +1,74 @@
 import os
 import re
+
 import matplotlib.pyplot as plt
 import pandas as pd
-import holidays
-from scipy import stats 
 import pm4py
+import holidays
 from graphviz import Source
 from pm4py.visualization.dfg import visualizer as dfg_visualizer
 
 PROCESSED_DATA_PATH = "data/processed/patient_journey_log.csv"
 OUTPUT_DIR = "reports/figures"
-BOXPLOT_PATH = "reports/figures/waiting_time_boxplot.png"
 OUTPUT_IMG_PATH = "reports/figures/patient_journey_dfg.png"
+
+WAITING_CSV = "reports/waiting_transitions.csv"
+WAITING_BOXPLOT_WEEKEND = "reports/figures/waiting_weekday_vs_weekend_boxplot.png"
+WAITING_BOXPLOT_DAYTYPE = "reports/figures/waiting_holiday_weekend_weekday_boxplot.png"
+WAITING_ECDF_WEEKEND = "reports/figures/waiting_weekday_vs_weekend_ecdf.png"
+WAITING_ECDF_DAYTYPE = "reports/figures/waiting_holiday_weekend_weekday_ecdf.png"
 OUTPUT_IMG_PATH_TIME = "reports/figures/patient_journey_dfg_time.png"
-DAY_NIGHT_BOXPLOT = "reports/figures/waiting_time_day_night_boxplot.png"
-HOLIDAY_BOXPLOT = "reports/figures/waiting_time_holiday_boxplot.png"
 
+# Boxplot on log1p scale 
+def plot_boxplot_log1p(groups: dict, title: str, output_path: str):
+    labels = []
+    data = []
+    for name, vals in groups.items():
+        v = pd.Series(vals).dropna().astype(float)
+        v = v[v > 0]
+        if len(v) == 0:
+            continue
+        labels.append(f"{name}\n(n={len(v)})")
+        data.append((v + 1.0).apply(lambda x: float(x)).apply(lambda x: __import__('math').log(x)))
 
-# function for uniform boxplots
-def beautify_boxplot(data, labels, title, ylabel, output_path, colors=None):
-    plt.figure(figsize=(8,5))
-    if colors is None:
-       colors = ["#A0CDF5"] * len(data)
-
-    bp = plt.boxplot(data, 
-                     labels=labels,
-                    patch_artist=True,
-                    showmeans=True,   meanprops=dict( marker='D',markeredgecolor='black',  markerfacecolor='red',  markersize=5),
-                    whiskerprops=dict(linewidth=1.5), 
-                    medianprops=dict(color="blue", linewidth=2),
-        flierprops=dict(
-            marker='o',
-            markersize=4,
-            markeredgewidth=1
-        ))
-    
-    plt.ylim(0, 200)  
-    plt.grid(axis="y", linestyle="--", color='gray', alpha=0.5)
-    for box , color in zip(bp["boxes"], colors):
-        box.set(facecolor=color, edgecolor="black", linewidth=1.5)
-    
-    plt.title(title)
-    plt.ylabel(ylabel)
+    plt.figure(figsize=(9, 5))
+    plt.boxplot(data, tick_labels=labels, showmeans=True)
+    plt.title(title + "\n(y-axis = log(1 + minutes))")
+    plt.ylabel("log(1 + minutes)")
+    plt.grid(axis="y", linestyle="--", alpha=0.35)
     plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     plt.savefig(output_path)
     plt.close()
 
 
+# ECDF with log-x 
+def plot_ecdf_minutes(groups: dict, title: str, output_path: str):
+    plt.figure(figsize=(9, 5))
+
+    for name, vals in groups.items():
+        v = pd.Series(vals).dropna().astype(float)
+        v = v[v > 0]
+        if len(v) == 0:
+            continue
+        v = v.sort_values()
+        y = (pd.RangeIndex(1, len(v) + 1) / len(v)).to_numpy()
+        plt.step(v.to_numpy(), y, where="post", label=f"{name} (n={len(v)})")
+
+    plt.xscale("log")
+    plt.title(title + "\n(x-axis = minutes, log scale)")
+    plt.xlabel("Minutes (log scale)")
+    plt.ylabel("ECDF")
+    plt.grid(axis="both", linestyle="--", alpha=0.35)
+    plt.legend()
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path)
+    plt.close()
+
 def discover_process():
     df = pd.read_csv(PROCESSED_DATA_PATH)
-
     df['time:timestamp'] = pd.to_datetime(df['time:timestamp'], utc=True)
-    df["start:timestamp"] = pd.to_datetime(df["start:timestamp"], utc=True)
-    df["end:timestamp"] = pd.to_datetime(df["end:timestamp"], utc=True)
-
-
-    # Manually computes the waiting time to generate a boxplot to look for outliers
-    df["waiting_time"] = (
-    df.groupby("case:concept:name")["start:timestamp"]
-      .shift(-1) - df["end:timestamp"])
-    df["next_activity"] = df.groupby("case:concept:name")["concept:name"].shift(-1)
-    df["waiting_time"] = df["waiting_time"].dt.total_seconds() / 3600.0 #in hours
-    df_wait = df.dropna(subset=["waiting_time"])
-    beautify_boxplot( [df_wait["waiting_time"]], ["Waiting Time in hours"], "Waiting time boxplot", "Waiting Time distribution", BOXPLOT_PATH)   
-
-    # Analysis of outliers
-    outliers = df[df["waiting_time"] > df["waiting_time"].quantile(0.9)]
-    outliers_infos = outliers[['case:concept:name','concept:name','next_activity','waiting_time']]
-
-   # Activities that are typically isolated/the first
-    first_activities = df.sort_values(['case:concept:name', 'start:timestamp']) \
-                     .groupby('case:concept:name').first()
-
-    first_counts = first_activities['concept:name'].value_counts()
-    total_counts = df.groupby('concept:name')['case:concept:name'].nunique()
-    isolated_acts = (df.sort_values(['case:concept:name', 'start:timestamp'])
-                   .groupby('case:concept:name').first()['concept:name']
-                   .value_counts() / df.groupby('concept:name')['case:concept:name'].nunique()
-                    ).loc[lambda x: x > 0.9].index.tolist()
-
-    
-
-    mean_before_next = df.groupby("next_activity")["waiting_time"].mean().reset_index()
-    mean_after_current = df.groupby("concept:name")["waiting_time"].mean().reset_index()
-    outliers = outliers.merge(mean_before_next, on = "next_activity", how = "left", suffixes=('', '_mean_before_next'))
-    outliers = outliers.merge(mean_after_current, on="concept:name", how="left", suffixes=('', '_mean_after_current'))
-
-    real_outliers = outliers[ 
-        ((outliers["next_activity"].isin(isolated_acts)) &
-        ((outliers["waiting_time"] > 2 * outliers["waiting_time_mean_before_next"]) |
-        (outliers["waiting_time"] > 2 * outliers["waiting_time_mean_after_current"]))) |
-        ((outliers["waiting_time"] > 2 * outliers["waiting_time_mean_before_next"]) &
-        (outliers["waiting_time"] > 2 * outliers["waiting_time_mean_after_current"]))]
-
-    df = df[~df.index.isin(real_outliers.index)]
 
     # Grouping similar activities
     s = df['concept:name'].astype(str).str.strip().str.lower()
@@ -159,6 +134,31 @@ def discover_process():
         variant="frequency",
     )
 
+    df["start:timestamp"] = pd.to_datetime(df["start:timestamp"], utc=True)
+    df["end:timestamp"] = pd.to_datetime(df["end:timestamp"], utc=True)
+
+    # Waiting time
+    df = df.sort_values(["case:concept:name", "start:timestamp", "end:timestamp"]).copy()
+
+    df["next_start"] = df.groupby("case:concept:name")["start:timestamp"].shift(-1)
+    df["next_activity"] = df.groupby("case:concept:name")["concept:name"].shift(-1)
+
+    df["raw_gap_min"] = ((df["next_start"] - df["end:timestamp"]).dt.total_seconds() / 60.0).round(2)
+    df["waiting_min"] = df["raw_gap_min"].clip(lower=0).round(2)
+   
+
+
+    perf_dfg, sa, ea = pm4py.discover_performance_dfg(
+        df,
+        case_id_key="case:concept:name",
+        activity_key="concept:name",
+        timestamp_key="start:timestamp",
+        perf_aggregation_key="mean",
+        business_hours=False,
+    )
+
+    os.makedirs(os.path.dirname(OUTPUT_IMG_PATH_TIME), exist_ok=True)
+
     perf_dfg, sa, ea = pm4py.discover_performance_dfg(
         df,
         case_id_key="case:concept:name",
@@ -192,7 +192,7 @@ def discover_process():
         else:
             return m.group(0)
 
-        return f'{attr}="{minutes} min"'
+        return f'{attr}="{minutes:.2f} min"'
 
     dot = re.sub(
         r'(?P<attr>(?:x?label|headlabel|taillabel))\s*=\s*(?P<q>"?)(?P<val>\d+(?:\.\d+)?)(?:\s*)(?P<unit>[smhd])(?P=q)',
@@ -202,53 +202,55 @@ def discover_process():
     )
  
     Source(dot).render(filename=os.path.splitext(OUTPUT_IMG_PATH_TIME)[0], format="png", cleanup=True) 
+  
 
-    # Looking for difference in waiting times between day and night(boxplot)
-    df["hour"] = df["end:timestamp"].dt.hour
-    df["time_of_day"] = df["hour"].apply(lambda x: "day" if 6 <= x < 18 else "night")
-    df = df.dropna(subset=["waiting_time"])
-    beautify_boxplot( [df[df["time_of_day"] == "day"]["waiting_time"],
-    df[df["time_of_day"] == "night"]["waiting_time"]], ["Day", "Night"], "Waiting Time by Time of Day", "Waiting Time (hours)", DAY_NIGHT_BOXPLOT, colors=["#A0CDF5", "#9FE984"])
+    print(f"Saved performance DFG to: {OUTPUT_IMG_PATH_TIME}")
+    trans = df.dropna(subset=["next_activity", "raw_gap_min"]).copy()
 
-    # Looking for difference in waiting times between day and night(mean/mode/median)
-    groups = df.groupby("time_of_day")["waiting_time"]
-    mean_waiting = groups.mean()
-    median_waiting = groups.median()
-    mode_waiting = groups.apply(lambda x: stats.mode(x, keepdims=True).mode[0])    
-    summary = pd.DataFrame({
-        "Mean Waiting Time": mean_waiting,
-        "Median Waiting Time": median_waiting,
-        "Mode Waiting Time": mode_waiting
-    })
-    summary = summary.reindex(["day", "night"])
-    print(summary)
+    years = df["start:timestamp"].dt.year.dropna().unique().tolist()
+    ma_holidays = holidays.country_holidays("US", subdiv="MA", years=years)
 
-  # Filters for holidays and weekends(boxplot)
-    holiday = holidays.Brazil(years=df["start:timestamp"].dt.year.unique())
-    df["date"] = df["start:timestamp"].dt.date
-    df["is_weekend"] = df["start:timestamp"].dt.weekday >= 5
-    df = df.dropna(subset=["waiting_time"])
-    df["is_holiday"] = df["date"].apply(lambda x: x in holiday)
+    trans["date"] = trans["start:timestamp"].dt.date
+    trans["is_holiday"] = trans["date"].apply(lambda d: d in ma_holidays)
+    trans["is_weekend"] = trans["start:timestamp"].dt.weekday >= 5
+    trans["day_type"] = trans.apply(lambda r: "holiday" if r["is_holiday"] else ("weekend" if r["is_weekend"] else "weekday"), axis=1)
 
-    # Function that returns the type of day
-    def day_type(row):
-        if row["date"] in holiday:
-            return "holiday"
-        elif row["is_weekend"]:
-            return "weekend"
-        else:
-            return "weekday"
-    
-    df["day_type"] = df.apply(day_type, axis=1)
-    beautify_boxplot( [df[df["day_type"] == "holiday"]["waiting_time"],
-    df[df["day_type"] == "weekend"]["waiting_time"], df[df["day_type"] == "weekday"]["waiting_time"]],
-    ["Holiday", "Weekend", "Weekday"], "Waiting Time by Day Type", "Waiting Time in hours", HOLIDAY_BOXPLOT, colors=["#D387F9", "#F5D6A0", "#84BFF3"])
+    # Save transitions dataset for later modeling
+    os.makedirs(os.path.dirname(WAITING_CSV), exist_ok=True)
+    trans[[
+        "case:concept:name",
+        "concept:name",
+        "next_activity",
+        "start:timestamp",
+        "end:timestamp",
+        "next_start",
+        "raw_gap_min",
+        "waiting_min",
+        "date",
+        "is_holiday",
+        "is_weekend",
+        "day_type",
+    ]].to_csv(WAITING_CSV, index=False)
 
+    # Plots to compare waiting times by calendar groups (minutes, waiting > 0)
+    weekend_groups = {
+        "weekday": trans[~trans["is_weekend"]]["waiting_min"],
+        "weekend": trans[trans["is_weekend"]]["waiting_min"],
+    }
+    daytype_groups = {
+        "holiday": trans[trans["day_type"] == "holiday"]["waiting_min"],
+        "weekend": trans[trans["day_type"] == "weekend"]["waiting_min"],
+        "weekday": trans[trans["day_type"] == "weekday"]["waiting_min"],
+    }
 
+    plot_boxplot_log1p(weekend_groups, "Waiting time by Weekday vs Weekend (minutes)", WAITING_BOXPLOT_WEEKEND)
+    plot_ecdf_minutes(weekend_groups, "Waiting time by Weekday vs Weekend (minutes)", WAITING_ECDF_WEEKEND)
 
+    plot_boxplot_log1p(daytype_groups, "Waiting time by Holiday/Weekend/Weekday (minutes)", WAITING_BOXPLOT_DAYTYPE)
+    plot_ecdf_minutes(daytype_groups, "Waiting time by Holiday/Weekend/Weekday (minutes)", WAITING_ECDF_DAYTYPE)
 
-
-
+    print(f"Saved waiting transitions to: {WAITING_CSV}")
+    print(f"Saved plots to: {WAITING_BOXPLOT_WEEKEND}, {WAITING_ECDF_WEEKEND}, {WAITING_BOXPLOT_DAYTYPE}, {WAITING_ECDF_DAYTYPE}")
 
 if __name__ == "__main__":
-    discover_process() 
+    discover_process()
