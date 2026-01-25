@@ -17,6 +17,8 @@ WAITING_BOXPLOT_WEEKEND = "reports/figures/waiting_weekday_vs_weekend_boxplot.pn
 WAITING_BOXPLOT_DAYTYPE = "reports/figures/waiting_holiday_weekend_weekday_boxplot.png"
 WAITING_ECDF_WEEKEND = "reports/figures/waiting_weekday_vs_weekend_ecdf.png"
 WAITING_ECDF_DAYTYPE = "reports/figures/waiting_holiday_weekend_weekday_ecdf.png"
+WAITING_BOXPLOT_DAYNIGHT = "reports/figures/waiting_day_vs_night_boxplot.png"
+WAITING_ECDF_DAYNIGHT = "reports/figures/waiting_day_vs_night_ecdf.png"
 OUTPUT_IMG_PATH_TIME = "reports/figures/patient_journey_dfg_time.png"
 
 # Boxplot on log1p scale 
@@ -58,7 +60,7 @@ def plot_ecdf_minutes(groups: dict, title: str, output_path: str):
     plt.xscale("log")
     plt.title(title + "\n(x-axis = minutes, log scale)")
     plt.xlabel("Minutes (log scale)")
-    plt.ylabel("ECDF")
+    plt.ylabel("ECDF")  #ECDF = Empirical Cumulative Distribution Function
     plt.grid(axis="both", linestyle="--", alpha=0.35)
     plt.legend()
     plt.tight_layout()
@@ -214,6 +216,9 @@ def discover_process():
     trans["is_holiday"] = trans["date"].apply(lambda d: d in ma_holidays)
     trans["is_weekend"] = trans["start:timestamp"].dt.weekday >= 5
     trans["day_type"] = trans.apply(lambda r: "holiday" if r["is_holiday"] else ("weekend" if r["is_weekend"] else "weekday"), axis=1)
+    # Day/Night based on start time of the current activity (06:00-17:59 = day)
+    trans["hour"] = trans["start:timestamp"].dt.hour
+    trans["time_of_day"] = trans["hour"].apply(lambda h: "day" if 6 <= h < 18 else "night")
 
     # Save transitions dataset for later modeling
     os.makedirs(os.path.dirname(WAITING_CSV), exist_ok=True)
@@ -231,6 +236,32 @@ def discover_process():
         "is_weekend",
         "day_type",
     ]].to_csv(WAITING_CSV, index=False)
+
+    # Day vs Night analysis
+    daynight_groups = {
+        "day": trans[trans["time_of_day"] == "day"]["waiting_min"],
+        "night": trans[trans["time_of_day"] == "night"]["waiting_min"],
+    }
+
+    plot_boxplot_log1p(daynight_groups, "Waiting time by Day vs Night (minutes)", WAITING_BOXPLOT_DAYNIGHT)
+    plot_ecdf_minutes(daynight_groups, "Waiting time by Day vs Night (minutes)", WAITING_ECDF_DAYNIGHT)
+
+    def _summary(series: pd.Series) -> dict:
+        s = pd.Series(series).dropna().astype(float)
+        s = s[s > 0]
+        if len(s) == 0:
+            return {"n": 0, "median": None, "p90": None, "p95": None, "p99": None}
+        return {
+            "n": int(len(s)),
+            "median": round(float(s.median()), 2),
+            "p90": round(float(s.quantile(0.90)), 2),
+            "p95": round(float(s.quantile(0.95)), 2),
+            "p99": round(float(s.quantile(0.99)), 2),
+        }
+
+    summary_dn = pd.DataFrame({k: _summary(v) for k, v in daynight_groups.items()}).T
+    print("\nWaiting time summary (minutes, waiting>0) - Day vs Night")
+    print(summary_dn)
 
     # Plots to compare waiting times by calendar groups (minutes, waiting > 0)
     weekend_groups = {
