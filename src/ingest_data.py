@@ -9,7 +9,7 @@ def ingest_and_clean():
 
     try:
         cols_to_use = ['ENCOUNTER', 'START', 'STOP', 'DESCRIPTION']
-        df = pd.read_csv(RAW_DATA_PATH, sep=',', usecols=cols_to_use)
+        df = pd.read_csv(RAW_DATA_PATH, sep=';', usecols=cols_to_use)
     except FileNotFoundError:
         print(f"ERROR: File {RAW_DATA_PATH} not found.")
         sys.exit(1)
@@ -21,7 +21,7 @@ def ingest_and_clean():
 
     df.dropna(subset=['ENCOUNTER', 'START', 'STOP', 'DESCRIPTION'], inplace=True)
 
-    n_patients = 100 # adjust as needed
+    n_patients = 50 # adjust as needed
     encounter_counts = df['ENCOUNTER'].unique()[:n_patients]
     df = df[df['ENCOUNTER'].isin(encounter_counts)].copy()
 
